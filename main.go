@@ -1,104 +1,67 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"os"
-
-	// Import the OpenShift config API types
-	configv1 "github.com/openshift/api/config/v1"
-
-	// Import Kubernetes client-go libraries
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/rest"
-	"k8s.io/client-go/tools/clientcmd"
+    "fmt"
+    "os"
+    "os/exec"
+    "strings"
 )
 
-func main() {
-	// Determine Kubernetes configuration path or use in-cluster config
-	// This logic is standard client-go practice, not directly from sources,
-	// but necessary for a runnable program.
-	kubeconfigPath := os.Getenv("KUBECONFIG")
-	var config *rest.Config
-	var err error
-
-	if kubeconfigPath == "" {
-		// Try in-cluster config
-		config, err = rest.InClusterConfig()
-		if err != nil {
-			// Fallback to default config path if in-cluster fails
-			// Using clientcmd.NewDefaultClientConfigLoadingRules() is standard
-			// client-go for loading ~/.kube/config
-			kubeconfig := clientcmd.NewDefaultClientConfigLoadingRules().Get </dev/null>
-			config, err = clientcmd.NewNonInteractiveDeferredLoadingClientConfig(
-				kubeconfig,
-				&clientcmd.ConfigOverrides{},
-			).ClientConfig()
-			if err != nil {
-				log.Fatalf("Error building Kubernetes config: %v", err)
-			}
-		}
-	} else {
-		// Use specified kubeconfig file
-		config, err = clientcmd.BuildConfigFromFlags("", kubeconfigPath)
-		if err != nil {
-			log.Fatalf("Error building Kubernetes config from %s: %v", kubeconfigPath, err)
-		}
-	}
-
-
-	// Create a client for the config.openshift.io/v1 API group
-	// This uses the config package imported above to add the scheme.
-	// Source [1] shows getting client instances like configClient.
-	client, err := rest.NewRESTClient(config)
-	if err != nil {
-		log.Fatalf("Error creating REST client: %v", err)
-	}
-
-	// Add the configv1 scheme to the client's serializer.
-	// This allows the client to understand Infrastructure objects.
-	scheme := configv1.AddToScheme
-	if err := scheme(client.NewRequest("").SetHeader("Accept", "application/json").Verb("").Name("").Namespace("").Resource("").SubResource("").Param("", "").Timeout(0).Do(context.TODO()).Into(nil)); err != nil {
-       log.Fatalf("Error adding configv1 scheme: %v", err)
+// getOpenshiftPlatformType uses the 'oc' command to get the infrastructure platform type.
+// It handles errors and returns the platform type as a string.
+func getOpenshiftPlatformType() (string, error) {
+    // Execute the 'oc' command to get the infrastructure resource in YAML format.
+    cmd := exec.Command("oc", "get", "infrastructure", "cluster", "-o", "yaml")
+    output, err := cmd.CombinedOutput()
+    if err != nil {
+        // Improved error message: include the command and its output.
+        return "", fmt.Errorf("error running 'oc get infrastructure cluster -o yaml': %v, output: %s", err, output)
     }
-    // NOTE: The scheme registration is typically done via a *Scheme struct
-    // and added to a dynamic client or a scheme-aware client-go client.
-    // A more standard way (less error prone with RESTClient) is below using a dynamic client or typed client.
 
-	// --- Alternative and more standard way using a typed client ---
-	// This is a more common pattern shown in client-go examples for custom resources.
-	// Source [1] implies use of typed clients like configClient.
-	configClient, err := configv1.NewForConfig(config)
-	if err != nil {
-		log.Fatalf("Error creating configv1 client: %v", err)
-	}
+    // Convert the output to a string for easier processing.
+    outputStr := string(output)
 
-	// Get the "cluster" Infrastructure resource
-	// Source [1] explicitly shows getting infraConfig using client.Get or configClient...Get
-	infraConfig, err := configClient.Infrastructures().Get(context.TODO(), "cluster", metav1.GetOptions{})
-	if err != nil {
-		log.Fatalf("Error getting Infrastructure resource: %v", err)
-	}
+    // Extract the platformType using string manipulation.  This is basic YAML parsing.
+    // A proper YAML parser would be more robust, but for this simple task, string
+    // manipulation is sufficient and avoids adding a dependency.
+    platformType, err := extractPlatformType(outputStr)
+    if err != nil {
+        return "", err
+    }
+    return platformType, nil
+}
 
-	// Access the platform type from the status
-	// The `.status.platform` field is deprecated [Source from prior turn]
-	// The preferred field is `.status.platformStatus.type` [Source from prior turn, implied by 57]
-	platformType := "Unknown" // Default
-	// Deprecated field access (optional, for demonstration)
-	deprecatedPlatform := infraConfig.Status.Platform
-	if deprecatedPlatform != "" {
-		log.Printf("Deprecated .status.platform: %s", deprecatedPlatform) // Log as deprecated
-	}
+// extractPlatformType extracts the platform type from the YAML output string.
+func extractPlatformType(yamlOutput string) (string, error) {
+    lines := strings.Split(yamlOutput, "\n")
+    for _, line := range lines {
+        line = strings.TrimSpace(line)
+        if strings.HasPrefix(line, "platformType:") {
+            parts := strings.SplitN(line, ":", 2)
+            if len(parts) > 1 {
+                platformType := strings.TrimSpace(parts[1])
+                if platformType != "" {
+                    return platformType, nil
+                }
+                return "", fmt.Errorf("platformType is empty in the output")
 
-	// Preferred field access
-	if infraConfig.Status.PlatformStatus != nil {
-		platformType = string(infraConfig.Status.PlatformStatus.Type) // Convert configv1.PlatformType to string
-	}
+            }
+        }
+    }
+    return "", fmt.Errorf("platformType not found in the output")
+}
 
+func main() {
+    // Call the function to get the platform type.
+    platformType, err := getOpenshiftPlatformType()
+    if err != nil {
+        // Print the error to standard error and exit with a non-zero exit code.
+        fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+        os.Exit(1)
+    }
 
-	// Print the result
-	fmt.Printf("Cluster Platform Type: %s\n", platformType)
+    // Print the platform type to standard output.
+    fmt.Println(platformType)
 }
 
 
